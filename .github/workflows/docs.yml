@@ -1,4 +1,4 @@
-name: Docs
+name: Build and Docker
 
 on:
   push:
@@ -6,72 +6,79 @@ on:
       - dev
 
 jobs:
-  check:
-    name: Docs
+  build:
+    name: Build and Docker
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      # Setup
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      # Caches
+      - name: Gradle cache
+        uses: actions/cache@v4
         with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: docs/package-lock.json
+          path: ~/.gradle/caches
+          key: "${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle') }}"
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      - name: Gradle wrapper cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper
+          key: "${{ runner.os }}-wrapper-${{ hashFiles('**/*.gradle') }}"
+          restore-keys: |
+            ${{ runner.os }}-wrapper-
+      - name: Npm cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: "${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}"
+          restore-keys: |
+            ${{ runner.os }}-node-
+      - name: Node cache
+        uses: actions/cache@v4
+        with:
+          path: node
+          key: "${{ runner.os }}-node-${{ hashFiles('**/*.gradle') }}"
+          restore-keys: |
+            ${{ runner.os }}-node-
 
-      # Build
-      - name: Build
-        working-directory: docs
+      # JDK
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+
+      # Gradle build
+      - name: Build with Gradle
         run: |
-          npm install
-          node_modules/.bin/githubcontrib --repo akhq --owner tchiotludo --format html --sortOrder desc > .vuepress/public/contributors.html
-          npm run build
-          echo "akhq.io" > .vuepress/dist/CNAME
+          ./gradlew classes testClasses --parallel --no-daemon
+          ./gradlew build --no-daemon
 
-      # Copy for helm
-      - name: Add some files
-        run: |
-          cp LICENSE helm/akhq/LICENSE
-          cp README.md helm/akhq/README.md
+      # Build Docker image
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-      # Helm charts
-      - uses: J12934/helm-gh-pages-action@master
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
         with:
-          access-token: ${{ secrets.GITHUB_PERSONAL_TOKEN }}
-          charts-folder: "helm"
-          deploy-branch: helm
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-      # Clone helm charts
-      - name: Clone helm charts
-        uses: actions/checkout@v4
+      - name: Build and Push Docker image
+        uses: docker/build-push-action@v5
         with:
-          ref: helm
-          path: tmp-helm
+          context: .
+          push: true
+          tags: your-dockerhub-username/akhq:latest
 
-      # Add helm charts
-      - name: Add helm charts
-        run: |
-          rm -rf tmp-helm/.git
-          cp -R tmp-helm/* docs/.vuepress/dist/
-
-      # Deploy
-      - name: Deploy
-        uses: peaceiris/actions-gh-pages@v4
+      # Upload artifacts
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
         with:
-          personal_token: ${{ secrets.GITHUB_PERSONAL_TOKEN }}
-          publish_dir: docs/.vuepress/dist/
-
-      # Slack
-      - name: Slack notification
-        uses: 8398a7/action-slack@v3
-        if: always()
-        with:
-          status: ${{ job.status }}
-          username: Github Actions
-          icon_emoji: ':github-actions:'
-          channel: 'C03H9CEBGS2'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          name: jar
+          path: build/libs/
